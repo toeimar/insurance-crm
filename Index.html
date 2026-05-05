@@ -1,3 +1,4 @@
+```html
 <!DOCTYPE html>
 <html lang="th">
 <head>
@@ -437,12 +438,13 @@
 
 
 <script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-  import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-  import { getFirestore, collection, doc, setDoc, getDoc, getDocs, updateDoc, query, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+  // ดึง SDK รุ่น 11.6.1 ตามมาตรฐานใหม่ล่าสุดเพื่อไม่ให้ถูกบล็อกการทำงาน
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+  import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+  import { getFirestore, collection, doc, setDoc, getDoc, updateDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
   // Configuration
-  const firebaseConfig = {
+  const fallbackConfig = {
     apiKey: "AIzaSyD1GnYInbXZHxjX91E25ki2WP-R0a9pWTU",
     authDomain: "gold-savings-517d2.firebaseapp.com",
     projectId: "gold-savings-517d2",
@@ -451,22 +453,23 @@
     appId: "1:1039204885436:web:046afe73cf7c98f556c1b9",
     measurementId: "G-H6H6GL3NW6"
   };
+  
+  const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : fallbackConfig;
+  const appId = typeof __app_id !== 'undefined' ? __app_id : 'gold-savings-app';
 
   const app = initializeApp(firebaseConfig);
   const auth = getAuth(app);
   const db = getFirestore(app);
   
-  const appId = typeof __app_id !== 'undefined' ? __app_id : 'gold-savings-app';
   const getCol = (name) => collection(db, 'artifacts', appId, 'public', 'data', name);
   const getDocRef = (colName, docId) => doc(db, 'artifacts', appId, 'public', 'data', colName, docId);
 
-  // App State - ผูกกับ Local Cache ให้เปิดติดทันที 0 วินาที
+  // App State - Local Cache
   window.appState = {
     currentUser: null,
     users: JSON.parse(localStorage.getItem('cache_users') || '[]'),
     transactions: JSON.parse(localStorage.getItem('cache_txs') || '[]'),
     settings: JSON.parse(localStorage.getItem('cache_settings') || '{"shopName":"ร้านทองพรีเมียม","phone":"","line":"","bankName":"","bankAccName":"","bankAccNo":"","qrBase64":"","tgToken":"8731749401:AAEmA6wiK5o4NM0CcjJnmgt_827PbyMtPYw","tgChatId":"-1003963635991","hasSuperAdmin":false}'),
-    unsubUsers: null, unsubTx: null, unsubSet: null
   };
 
   let pendingTxId = null;
@@ -509,36 +512,42 @@
     }
   };
 
-  // Init System (Local-First Architecture) - โหลดหน้าจอทันที ไม่ต้องรอเน็ต
-  const initApp = () => {
-    // 1. ดึงผู้ใช้งานเดิมที่เคยล็อคอินไว้
+  // Safe Firebase Execution Guard
+  const safeSetDoc = async (ref, data, options = {}) => {
+    if (!auth.currentUser) return;
+    try { await setDoc(ref, data, options); } catch(e){}
+  };
+  const safeUpdateDoc = async (ref, data) => {
+    if (!auth.currentUser) return;
+    try { await updateDoc(ref, data); } catch(e){}
+  };
+
+  // Init System (No Blocking)
+  const initApp = async () => {
+    // 1. Load Local
     const savedUser = localStorage.getItem('goldAppUser');
     if (savedUser) window.appState.currentUser = JSON.parse(savedUser);
-
-    // 2. เรนเดอร์ UI ທันทีจากแคชที่บันทึกไว้
+    
     updateSettingsUI();
     routeUser(); 
 
-    // 3. ปล่อยให้ Firebase เชื่อมต่อแบบเบื้องหลัง (Background Sync)
-    setTimeout(async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-        setupListeners();
-      } catch (e) {
-        console.log("Firebase Background Sync Issue:", e);
+    // 2. Load Firebase safely
+    try {
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+        await signInWithCustomToken(auth, __initial_auth_token);
+      } else {
+        await signInAnonymously(auth);
       }
-    }, 100);
+      setupListeners();
+    } catch (e) {
+      console.warn("Offline or Connection Error, continuing in local mode");
+    }
 
     setInterval(() => checkAndRunBackup(), 3600000);
   };
 
   const setupListeners = () => {
-    // เมื่อ Firebase โหลดสำเร็จ จะอัปเดตแคชและหน้าจอให้ตรงกับเซิฟเวอร์อีกครั้ง
-    window.appState.unsubSet = onSnapshot(getDocRef('settings', 'global'), (doc) => {
+    onSnapshot(getDocRef('settings', 'global'), (doc) => {
       if(doc.exists()) {
         window.appState.settings = {...window.appState.settings, ...doc.data()};
         localStorage.setItem('cache_settings', JSON.stringify(window.appState.settings));
@@ -546,7 +555,7 @@
       }
     });
 
-    window.appState.unsubUsers = onSnapshot(getCol('appUsers'), (snap) => {
+    onSnapshot(getCol('appUsers'), (snap) => {
       window.appState.users = snap.docs.map(d => ({id: d.id, ...d.data()}));
       localStorage.setItem('cache_users', JSON.stringify(window.appState.users));
       
@@ -562,7 +571,7 @@
       updateDashboardStats();
     });
 
-    window.appState.unsubTx = onSnapshot(getCol('transactions'), (snap) => {
+    onSnapshot(getCol('transactions'), (snap) => {
       window.appState.transactions = snap.docs.map(d => ({id: d.id, ...d.data()})).sort((a,b) => b.date - a.date);
       localStorage.setItem('cache_txs', JSON.stringify(window.appState.transactions));
       
@@ -589,7 +598,7 @@
     document.getElementById('page-customer').classList.add('hidden');
     document.getElementById('page-admin').classList.add('hidden');
     
-    showLoading(false); // ปิดตัวโหลดเสมอ
+    showLoading(false);
 
     if(!window.appState.currentUser) {
       document.getElementById('page-login').classList.remove('hidden');
@@ -615,7 +624,7 @@
     routeUser();
   };
 
-  // Auth Functions (อัปเดต Local ทันที ไม่รอเน็ต)
+  // Auth Functions
   window.handleRegister = () => {
     const name = document.getElementById('reg-name').value.trim();
     const phone = document.getElementById('reg-phone').value.trim();
@@ -631,7 +640,7 @@
     if(secret === '9999' && !window.appState.settings.hasSuperAdmin) {
       role = 'superadmin';
       window.appState.settings.hasSuperAdmin = true;
-      setDoc(getDocRef('settings', 'global'), { hasSuperAdmin: true }, { merge: true }).catch(()=>{});
+      safeSetDoc(getDocRef('settings', 'global'), { hasSuperAdmin: true }, { merge: true });
     } else if (secret === '9999') {
       showToast("รหัสลับถูกใช้ไปแล้ว ไม่สามารถเป็น Super Admin ได้อีก", true);
       showLoading(false);
@@ -641,10 +650,8 @@
     const docId = genId();
     const newUser = { id: docId, phone, password: pass, name, role, email: '', balance: 0, createdAt: Date.now() };
     
-    // บันทึกแบบ Background ไม่รอ Await ทำให้หน้าเว็บไม่ค้าง
-    setDoc(getDocRef('appUsers', docId), newUser).catch(()=>{});
+    safeSetDoc(getDocRef('appUsers', docId), newUser);
     
-    // อัปเดต Local ทันที
     window.appState.users.push(newUser);
     localStorage.setItem('cache_users', JSON.stringify(window.appState.users));
     window.appState.currentUser = newUser;
@@ -670,19 +677,20 @@
     }
   };
 
-  // Profile (Local First)
+  // Profile
   const updateProfileUI = () => {
     const u = window.appState.currentUser;
     if(!u) return;
     
+    const bal = u.balance || 0;
     document.getElementById('pro-name').textContent = u.name;
     document.getElementById('edit-name').value = u.name;
     document.getElementById('edit-phone').value = u.phone;
     document.getElementById('edit-email').value = u.email || '';
     let rText = u.role === 'superadmin' ? 'ผู้ดูแลระบบหลัก' : (u.role === 'subadmin' ? 'ผู้ช่วยผู้ดูแล' : 'ลูกค้า');
     document.getElementById('pro-role').textContent = rText;
-    document.getElementById('cust-balance').textContent = u.balance.toLocaleString();
-    document.getElementById('cust-withdraw-max').textContent = u.balance.toLocaleString();
+    document.getElementById('cust-balance').textContent = bal.toLocaleString();
+    document.getElementById('cust-withdraw-max').textContent = bal.toLocaleString();
   };
 
   window.updateProfile = () => {
@@ -692,7 +700,7 @@
     
     window.appState.currentUser.name = name;
     window.appState.currentUser.email = email;
-    updateDoc(getDocRef('appUsers', window.appState.currentUser.id), { name, email }).catch(()=>{});
+    safeUpdateDoc(getDocRef('appUsers', window.appState.currentUser.id), { name, email });
     
     showToast("บันทึกโปรไฟล์สำเร็จ");
     updateProfileUI();
@@ -705,7 +713,7 @@
     showLoading(true);
     
     window.appState.currentUser.password = pass;
-    updateDoc(getDocRef('appUsers', window.appState.currentUser.id), { password: pass }).catch(()=>{});
+    safeUpdateDoc(getDocRef('appUsers', window.appState.currentUser.id), { password: pass });
     
     showToast("เปลี่ยนรหัสผ่านสำเร็จ");
     document.getElementById('edit-pass').value = '';
@@ -732,12 +740,12 @@
     if(navItem) navItem.classList.add('active');
   };
 
-  // Transactions (Deposit / Withdraw) - Local First
+  // Transactions (Deposit / Withdraw)
   window.submitDeposit = () => {
     const amount = parseFloat(document.getElementById('dep-amount').value);
     const remark = document.getElementById('dep-remark').value;
     const slipInput = document.getElementById('dep-slip');
-    const slipBase64 = slipInput.dataset.base64;
+    const slipBase64 = slipInput?.dataset?.base64;
 
     if(!amount || amount <= 0) return showToast("กรุณาระบุยอดเงินที่ถูกต้อง", true);
     if(!slipBase64) return showToast("กรุณาแนบสลิปโอนเงิน", true);
@@ -748,8 +756,8 @@
       type: 'deposit', amount, remark, slipBase64, status: 'pending', date: Date.now()
     };
     
-    setDoc(getDocRef('transactions', tx.id), tx).catch(()=>{});
-    window.appState.transactions.unshift(tx); // Local update
+    safeSetDoc(getDocRef('transactions', tx.id), tx);
+    window.appState.transactions.unshift(tx);
     localStorage.setItem('cache_txs', JSON.stringify(window.appState.transactions));
     
     sendTgMsg(`📥 <b>แจ้งเตือนฝากออม</b>\nจาก: ${tx.userName}\nยอดเงิน: ฿${amount.toLocaleString()}\nสถานะ: รอตรวจสอบ`);
@@ -768,7 +776,7 @@
   window.submitWithdraw = () => {
     const amount = parseFloat(document.getElementById('wit-amount').value);
     const remark = document.getElementById('wit-remark').value;
-    const max = window.appState.currentUser.balance;
+    const max = window.appState.currentUser.balance || 0;
 
     if(!amount || amount <= 0) return showToast("กรุณาระบุยอดเงินที่ถูกต้อง", true);
     if(amount > max) return showToast("ยอดเงินออมไม่เพียงพอ", true);
@@ -779,7 +787,7 @@
       type: 'withdraw', amount, remark, status: 'pending', date: Date.now()
     };
     
-    setDoc(getDocRef('transactions', tx.id), tx).catch(()=>{});
+    safeSetDoc(getDocRef('transactions', tx.id), tx);
     window.appState.transactions.unshift(tx);
     localStorage.setItem('cache_txs', JSON.stringify(window.appState.transactions));
     
@@ -820,7 +828,7 @@
               </div>
             </div>
             <div style="text-align:right;">
-              <div style="font-weight:700; color:${color};">฿${t.amount.toLocaleString()}</div>
+              <div style="font-weight:700; color:${color};">฿${(t.amount || 0).toLocaleString()}</div>
               <div style="margin-top:4px;">${statusBadge}</div>
             </div>
           </div>
@@ -869,7 +877,6 @@
   const renderAdminTransactions = () => {
     const tbody = document.querySelector('#table-tx tbody');
     tbody.innerHTML = '';
-    const myRole = window.appState.currentUser?.role;
 
     window.appState.transactions.forEach(t => {
       let tr = document.createElement('tr');
@@ -882,7 +889,7 @@
         if(t.type === 'deposit') {
           actionBtns = `<button class="btn btn-sm btn-success" onclick="approveTx('${t.id}')">✓</button> <button class="btn btn-sm btn-danger" onclick="rejectTx('${t.id}')">✗</button>`;
         } else {
-          actionBtns = `<button class="btn btn-sm btn-success" onclick="openEditWithdraw('${t.id}', ${t.amount})">พิจารณา</button> <button class="btn btn-sm btn-danger" onclick="rejectTx('${t.id}')">ปฏิเสธ</button>`;
+          actionBtns = `<button class="btn btn-sm btn-success" onclick="openEditWithdraw('${t.id}', ${t.amount || 0})">พิจารณา</button> <button class="btn btn-sm btn-danger" onclick="rejectTx('${t.id}')">ปฏิเสธ</button>`;
         }
       }
 
@@ -890,7 +897,7 @@
         <td>${d}</td>
         <td><b>${t.userName}</b></td>
         <td><span class="badge ${t.type==='deposit'?'bg-green':'bg-red'}">${t.type==='deposit'?'ฝาก':'ถอน'}</span></td>
-        <td style="font-weight:bold; color:${t.type==='deposit'?'var(--green)':'var(--red)'}">฿${t.amount.toLocaleString()}</td>
+        <td style="font-weight:bold; color:${t.type==='deposit'?'var(--green)':'var(--red)'}">฿${(t.amount || 0).toLocaleString()}</td>
         <td><div style="font-size:12px">${t.remark||'-'}</div>${slipBtn}</td>
         <td>${statusStr}</td>
         <td><div class="flex gap-2">${actionBtns}</div></td>
@@ -925,13 +932,13 @@
     });
   };
 
-  // Admin Actions (Local First)
+  // Admin Actions
   window.changeRole = (uid, newRole) => {
     if(confirm(`ต้องการเปลี่ยนสิทธิ์ผู้ใช้นี้เป็น ${newRole} ใช่หรือไม่?`)) {
       showLoading(true);
       const u = window.appState.users.find(x => x.id === uid);
       if(u) u.role = newRole;
-      updateDoc(getDocRef('appUsers', uid), { role: newRole }).catch(()=>{});
+      safeUpdateDoc(getDocRef('appUsers', uid), { role: newRole });
       
       renderAdminUsers();
       showToast("เปลี่ยนสิทธิ์สำเร็จ");
@@ -949,8 +956,8 @@
 
   window.openEditWithdraw = (txId, reqAmount) => {
     pendingTxId = txId;
-    document.getElementById('mw-req-amt').textContent = reqAmount.toLocaleString();
-    document.getElementById('mw-app-amt').value = reqAmount;
+    document.getElementById('mw-req-amt').textContent = (reqAmount || 0).toLocaleString();
+    document.getElementById('mw-app-amt').value = reqAmount || 0;
     openModal('modal-edit-withdraw');
   };
 
@@ -980,7 +987,7 @@
     if(!tx) return showLoading(false);
 
     const user = window.appState.users.find(u => u.id === tx.userId);
-    let finalAmount = overrideAmount !== null ? overrideAmount : tx.amount;
+    let finalAmount = overrideAmount !== null ? overrideAmount : (tx.amount || 0);
 
     if(status === 'approved') {
       let newBalance = user.balance || 0;
@@ -993,7 +1000,7 @@
         newBalance -= finalAmount;
       }
       user.balance = newBalance;
-      updateDoc(getDocRef('appUsers', user.id), { balance: newBalance }).catch(()=>{});
+      safeUpdateDoc(getDocRef('appUsers', user.id), { balance: newBalance });
     }
 
     tx.status = status;
@@ -1004,7 +1011,7 @@
       updateData.remark = tx.remark;
     }
 
-    updateDoc(getDocRef('transactions', txId), updateData).catch(()=>{});
+    safeUpdateDoc(getDocRef('transactions', txId), updateData);
     
     // Updates Local UI
     localStorage.setItem('cache_users', JSON.stringify(window.appState.users));
@@ -1070,7 +1077,7 @@
     localStorage.setItem('cache_settings', JSON.stringify(window.appState.settings));
     updateSettingsUI();
 
-    setDoc(getDocRef('settings', 'global'), newData, {merge:true}).catch(()=>{});
+    safeSetDoc(getDocRef('settings', 'global'), newData, {merge:true});
     
     showToast("บันทึกการตั้งค่าสำเร็จ");
     setTimeout(() => showLoading(false), 200);
@@ -1102,12 +1109,12 @@
     let csvContent = "data:text/csv;charset=utf-8,\uFEFF";
     if(type === 'users') {
       csvContent += "Name,Phone,Role,Balance\n";
-      data.forEach(u => { csvContent += `"${u.name}","${u.phone}","${u.role}","${u.balance}"\n`; });
+      data.forEach(u => { csvContent += `"${u.name}","${u.phone}","${u.role}","${u.balance||0}"\n`; });
     } else {
       csvContent += "Date,UserName,Type,Amount,Status,Remark\n";
       data.forEach(t => { 
         let d = new Date(t.date).toLocaleString('th-TH');
-        csvContent += `"${d}","${t.userName}","${t.type}","${t.amount}","${t.status}","${t.remark||''}"\n`; 
+        csvContent += `"${d}","${t.userName}","${t.type}","${t.amount||0}","${t.status}","${t.remark||''}"\n`; 
       });
     }
     
@@ -1147,7 +1154,6 @@
     }
   };
 
-  // Run init (Local-First ไม่ต้องรอโหลดเน็ต)
   document.addEventListener('DOMContentLoaded', initApp);
 
 </script>
